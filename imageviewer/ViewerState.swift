@@ -10,7 +10,8 @@ import Combine
 import UniformTypeIdentifiers
 
 final class ViewerState: ObservableObject {
-    nonisolated(unsafe) private static let zipContentTypeIdentifier = "public.zip-archive"
+    private static let zipContentTypeIdentifier = "public.zip-archive"
+    private static let viewerPreferencesKey = "viewer.preferences"
 
     enum ViewPhase {
         case empty
@@ -22,6 +23,7 @@ final class ViewerState: ObservableObject {
     @Published private(set) var currentIndex: Int?
     @Published private(set) var currentItem: ImageItem?
     @Published private(set) var viewPhase: ViewPhase = .empty
+    @Published private(set) var recentDocumentURLs: [URL] = []
     @Published var presentation = ViewerPresentationState()
 
     var currentPositionText: String? {
@@ -67,6 +69,7 @@ final class ViewerState: ObservableObject {
     private let imageLoader: any ImageLoading
     private let accessController: any SecurityScopedAccessControlling
     private let archiveAccessor: any ArchiveAccessing
+    private let userDefaults: UserDefaults
     private static let minimumZoomScale: CGFloat = 0.1
     private static let maximumZoomScale: CGFloat = 8.0
     private static let zoomStep: CGFloat = 1.2
@@ -74,11 +77,15 @@ final class ViewerState: ObservableObject {
     init(
         imageLoader: (any ImageLoading)? = nil,
         accessController: any SecurityScopedAccessControlling = SecurityScopedAccessController(),
-        archiveAccessor: any ArchiveAccessing = DefaultArchiveAccessor()
+        archiveAccessor: any ArchiveAccessing = DefaultArchiveAccessor(),
+        userDefaults: UserDefaults = .standard
     ) {
         self.archiveAccessor = archiveAccessor
         self.imageLoader = imageLoader ?? DefaultImageLoader(archiveAccessor: archiveAccessor)
         self.accessController = accessController
+        self.userDefaults = userDefaults
+        presentation = Self.loadPresentation(from: userDefaults)
+        refreshRecentDocuments()
     }
 
     func open(url: URL) {
@@ -87,6 +94,7 @@ final class ViewerState: ObservableObject {
             let collection = try makeCollection(for: url)
             let initialIndex = collection.items.firstIndex(where: { $0.id == Self.itemIdentifier(for: url, in: $0) }) ?? 0
             try open(itemAt: initialIndex, in: collection)
+            noteRecentDocument(url)
         } catch {
             currentCollection = nil
             currentIndex = nil
@@ -117,6 +125,15 @@ final class ViewerState: ObservableObject {
         if panel.runModal() == .OK, let url = panel.url {
             open(url: url)
         }
+    }
+
+    func openRecentDocument(at url: URL) {
+        open(url: url)
+    }
+
+    func clearRecentDocuments() {
+        NSDocumentController.shared.clearRecentDocuments(nil)
+        refreshRecentDocuments()
     }
 
     func showPreviousItem() {
@@ -161,6 +178,7 @@ final class ViewerState: ObservableObject {
 
     func setFitMode(_ fitMode: ViewerPresentationState.FitMode) {
         presentation.fitMode = fitMode
+        persistPresentationPreferences()
     }
 
     func toggleFitModeForDoubleClick() {
@@ -172,6 +190,8 @@ final class ViewerState: ObservableObject {
             presentation.fitMode = .fitToWindow
             presentation.zoomScale = 1.0
         }
+
+        persistPresentationPreferences()
     }
 
     func zoomIn() {
@@ -205,10 +225,12 @@ final class ViewerState: ObservableObject {
 
     func setInterpolationMode(_ mode: ViewerPresentationState.InterpolationMode) {
         presentation.interpolationMode = mode
+        persistPresentationPreferences()
     }
 
     func setInfoOverlayMode(_ mode: ViewerPresentationState.InfoOverlayMode) {
         presentation.infoOverlayMode = mode
+        persistPresentationPreferences()
     }
 
     func toggleInfoOverlayMode() {
@@ -218,6 +240,8 @@ final class ViewerState: ObservableObject {
         case .alwaysVisible:
             presentation.infoOverlayMode = .autoHide
         }
+
+        persistPresentationPreferences()
     }
 
     private func makeCollection(for url: URL) throws -> any ImageCollection {
@@ -277,8 +301,9 @@ final class ViewerState: ObservableObject {
         currentCollection = collection
         currentIndex = index
         currentItem = item
-        presentation = ViewerPresentationState()
+        resetPresentationForNewItem()
         viewPhase = .loaded(image)
+        preloadAdjacentItems(around: index, in: collection)
     }
 
     private func tryOpen(itemAt index: Int, in collection: any ImageCollection) {
@@ -305,6 +330,68 @@ final class ViewerState: ObservableObject {
             return archiveURL.standardizedFileURL.absoluteString
         }
     }
+
+    private func noteRecentDocument(_ url: URL) {
+        NSDocumentController.shared.noteNewRecentDocumentURL(url)
+        refreshRecentDocuments()
+    }
+
+    private func refreshRecentDocuments() {
+        recentDocumentURLs = NSDocumentController.shared.recentDocumentURLs
+            .filter { Self.supportsOpenableFile(at: $0) }
+    }
+
+    private func preloadAdjacentItems(around index: Int, in collection: any ImageCollection) {
+        let candidateIndexes = [index - 1, index + 1]
+
+        for candidateIndex in candidateIndexes where collection.items.indices.contains(candidateIndex) {
+            imageLoader.preloadImage(for: collection.items[candidateIndex])
+        }
+    }
+
+    private func resetPresentationForNewItem() {
+        let persistedFitMode = presentation.fitMode
+        let persistedInterpolationMode = presentation.interpolationMode
+        let persistedInfoOverlayMode = presentation.infoOverlayMode
+
+        presentation = ViewerPresentationState()
+        presentation.fitMode = persistedFitMode
+        presentation.interpolationMode = persistedInterpolationMode
+        presentation.infoOverlayMode = persistedInfoOverlayMode
+    }
+
+    private func persistPresentationPreferences() {
+        let preferences = ViewerPreferences(
+            fitMode: presentation.fitMode,
+            interpolationMode: presentation.interpolationMode,
+            infoOverlayMode: presentation.infoOverlayMode
+        )
+
+        guard let data = try? JSONEncoder().encode(preferences) else {
+            return
+        }
+
+        userDefaults.set(data, forKey: Self.viewerPreferencesKey)
+    }
+
+    private static func loadPresentation(from userDefaults: UserDefaults) -> ViewerPresentationState {
+        guard let data = userDefaults.data(forKey: viewerPreferencesKey),
+              let preferences = try? JSONDecoder().decode(ViewerPreferences.self, from: data) else {
+            return ViewerPresentationState()
+        }
+
+        var presentation = ViewerPresentationState()
+        presentation.fitMode = preferences.fitMode
+        presentation.interpolationMode = preferences.interpolationMode
+        presentation.infoOverlayMode = preferences.infoOverlayMode
+        return presentation
+    }
+}
+
+private struct ViewerPreferences: Codable {
+    let fitMode: ViewerPresentationState.FitMode
+    let interpolationMode: ViewerPresentationState.InterpolationMode
+    let infoOverlayMode: ViewerPresentationState.InfoOverlayMode
 }
 
 enum ViewerStateError: LocalizedError {

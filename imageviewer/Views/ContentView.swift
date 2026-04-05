@@ -114,7 +114,8 @@ struct ContentView: View {
             return false
         }
 
-        return viewerState.presentation.fitMode == .fitToWindow && viewerState.presentation.zoomScale <= 1.0
+        return viewerState.presentation.fitMode == .fitToWindow
+            && viewerState.presentation.zoomScale <= 1.0
     }
 
     private func handleContinuousHover(_ phase: HoverPhase) {

@@ -10,25 +10,52 @@ import ImageIO
 
 protocol ImageLoading {
     func loadImage(for item: ImageItem) throws -> NSImage
+    func preloadImage(for item: ImageItem)
 }
 
-struct DefaultImageLoader: ImageLoading {
+final class DefaultImageLoader: ImageLoading {
     private let archiveAccessor: any ArchiveAccessing
+    private let cache = NSCache<NSString, NSImage>()
 
     init(archiveAccessor: any ArchiveAccessing = DefaultArchiveAccessor()) {
         self.archiveAccessor = archiveAccessor
+        cache.countLimit = 12
     }
 
     func loadImage(for item: ImageItem) throws -> NSImage {
+        if let cachedImage = cache.object(forKey: cacheKey(for: item)) {
+            return cachedImage
+        }
+
+        let image: NSImage
+
         switch item.sourceKind {
         case .fileSystem:
-            return try loadImage(from: item.url, debugContext: item.url.lastPathComponent)
+            image = try loadImage(from: item.url, debugContext: item.url.lastPathComponent)
         case .archiveEntry(let archiveURL, let entryPath):
             let imageData = try archiveAccessor.dataForImageEntry(in: archiveURL, entryPath: entryPath)
-            return try loadImage(
+            image = try loadImage(
                 from: imageData,
                 debugContext: "\(archiveURL.lastPathComponent)::\(entryPath)"
             )
+        }
+
+        cache.setObject(image, forKey: cacheKey(for: item))
+        return image
+    }
+
+    func preloadImage(for item: ImageItem) {
+        let key = cacheKey(for: item)
+        guard cache.object(forKey: key) == nil else {
+            return
+        }
+
+        Task.detached(priority: .utility) { [weak self] in
+            guard let self else {
+                return
+            }
+
+            _ = try? self.loadImage(for: item)
         }
     }
 
@@ -76,6 +103,10 @@ struct DefaultImageLoader: ImageLoading {
         }
 
         return NSImage(cgImage: cgImage, size: .zero)
+    }
+
+    private func cacheKey(for item: ImageItem) -> NSString {
+        item.id as NSString
     }
 }
 

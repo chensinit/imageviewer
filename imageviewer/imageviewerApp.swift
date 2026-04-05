@@ -31,6 +31,24 @@ struct imageviewerApp: App {
                     .keyboardShortcut("o")
             }
 
+            CommandGroup(after: .newItem) {
+                Menu("Open Recent") {
+                    if viewerState.recentDocumentURLs.isEmpty {
+                        Text("No Recent Files")
+                    } else {
+                        ForEach(viewerState.recentDocumentURLs, id: \.absoluteString) { url in
+                            Button(url.lastPathComponent) {
+                                viewerState.openRecentDocument(at: url)
+                            }
+                        }
+
+                        Divider()
+
+                        Button("Clear Menu", action: viewerState.clearRecentDocuments)
+                    }
+                }
+            }
+
             CommandMenu("Navigate") {
                 Button("Previous Image", action: viewerState.showPreviousItem)
                     .keyboardShortcut(.leftArrow, modifiers: [])

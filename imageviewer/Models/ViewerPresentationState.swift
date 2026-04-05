@@ -9,7 +9,7 @@ import CoreGraphics
 import SwiftUI
 
 struct ViewerPresentationState: Equatable {
-    enum FitMode: String, CaseIterable {
+    enum FitMode: String, CaseIterable, Codable {
         case fitToWindow
         case actualSize
 
@@ -23,7 +23,7 @@ struct ViewerPresentationState: Equatable {
         }
     }
 
-    enum InfoOverlayMode: String, CaseIterable {
+    enum InfoOverlayMode: String, CaseIterable, Codable {
         case autoHide
         case alwaysVisible
 
@@ -37,7 +37,7 @@ struct ViewerPresentationState: Equatable {
         }
     }
 
-    enum InterpolationMode: String, CaseIterable {
+    enum InterpolationMode: String, CaseIterable, Codable {
         case linear
         case nearest
 
