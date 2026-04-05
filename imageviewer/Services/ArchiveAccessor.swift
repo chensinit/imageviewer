@@ -120,7 +120,7 @@ struct DefaultArchiveAccessor: ArchiveAccessing {
         return ProcessOutput(text: nil, data: outputData)
     }
 
-    private static func isSupportedImageEntryPath(_ entryPath: String) -> Bool {
+    nonisolated private static func isSupportedImageEntryPath(_ entryPath: String) -> Bool {
         let fileExtension = URL(fileURLWithPath: entryPath).pathExtension
         guard !fileExtension.isEmpty,
               let type = UTType(filenameExtension: fileExtension) else {

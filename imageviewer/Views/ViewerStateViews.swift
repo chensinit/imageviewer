@@ -198,3 +198,227 @@ struct CollectionBrowserView: View {
         }
     }
 }
+
+struct TextAnalysisResultView: View {
+    let state: ImageTextAnalysisState
+    let languageSelection: Binding<OCRLanguageOption>
+    let translationTargetSelection: Binding<TranslationLanguageOption>
+    let translatedRegionsVisibility: Binding<Bool>
+    let autoTranslateSelection: Binding<Bool>
+    let rerunAction: () -> Void
+    let translateAction: () -> Void
+    let translationCompleted: (TranslationResult) -> Void
+    let translationFailed: (String) -> Void
+    let closeAction: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Extracted Text")
+                        .font(.title3.weight(.semibold))
+
+                    Text(subtitleText)
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer()
+
+                Picker("OCR Language", selection: languageSelection) {
+                    ForEach(OCRLanguageOption.allCases, id: \.self) { option in
+                        Text(option.displayName).tag(option)
+                    }
+                }
+                .pickerStyle(.menu)
+                .frame(width: 220)
+
+                Picker("Translate To", selection: translationTargetSelection) {
+                    ForEach(TranslationLanguageOption.allCases, id: \.self) { option in
+                        Text(option.displayName).tag(option)
+                    }
+                }
+                .pickerStyle(.menu)
+                .frame(width: 160)
+
+                Button("Run Again", action: rerunAction)
+                    .disabled(state.isAnalyzing)
+
+                Button("Translate", action: translateAction)
+                    .disabled(!canTranslate)
+
+                Button("Done", action: closeAction)
+            }
+
+            Toggle("Auto Translate New Images", isOn: autoTranslateSelection)
+
+            Toggle("Show Translation Overlay", isOn: translatedRegionsVisibility)
+                .disabled(!hasTranslationOverlay)
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Vision OCR Support")
+                    .font(.callout.weight(.semibold))
+
+                if state.supportedRecognitionLanguages.isEmpty {
+                    Text("No supported languages were reported for the current OCR setting.")
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text(state.supportedRecognitionLanguages.joined(separator: ", "))
+                        .font(.callout.monospaced())
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                }
+            }
+
+            translationSection
+
+            Group {
+                switch state.phase {
+                case .idle:
+                    ContentUnavailableView(
+                        "No OCR Result",
+                        systemImage: "text.viewfinder",
+                        description: Text("Run text extraction on the current image first.")
+                    )
+                case .analyzing:
+                    VStack(spacing: 12) {
+                        ProgressView()
+                            .controlSize(.large)
+
+                        Text("Extracting text from the current image...")
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                case .completed(let result):
+                    if result.regions.isEmpty {
+                        ContentUnavailableView(
+                            "No Text Detected",
+                            systemImage: "text.viewfinder",
+                            description: Text("OCR ran successfully, but no readable text was found.")
+                        )
+                    } else {
+                        ScrollView {
+                            Text(result.fullText)
+                                .textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    }
+                case .failed(let message):
+                    ContentUnavailableView(
+                        "OCR Failed",
+                        systemImage: "exclamationmark.triangle",
+                        description: Text(message)
+                    )
+                }
+            }
+            .frame(minHeight: 320)
+        }
+        .frame(minWidth: 520, minHeight: 420)
+        .padding(24)
+    }
+
+    private var subtitleText: String {
+        switch state.phase {
+        case .idle:
+            return "No OCR result yet"
+        case .analyzing:
+            return "Analyzing image with Vision (\(state.languageOption.displayName))"
+        case .completed(let result):
+            return "\(result.regions.count) text region(s) detected using \(result.languageOption.displayName)"
+        case .failed:
+            return "Could not extract text from the current image (\(state.languageOption.displayName))"
+        }
+    }
+
+    @ViewBuilder
+    private var translationSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Translation")
+                .font(.callout.weight(.semibold))
+
+            switch state.translationPhase {
+            case .idle:
+                Text("Choose a target language and translate the OCR result.")
+                    .foregroundStyle(.secondary)
+            case .translating:
+                HStack(spacing: 10) {
+                    ProgressView()
+                        .controlSize(.small)
+
+                    Text("Translating OCR text...")
+                        .foregroundStyle(.secondary)
+                }
+            case .completed(let result):
+                Text("\(result.sourceLanguage) -> \(result.targetLanguage)")
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+
+                ScrollView {
+                    Text(result.translatedText)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(minHeight: 120, maxHeight: 180)
+            case .failed(let message):
+                Text(message)
+                    .foregroundStyle(.red)
+            }
+        }
+    }
+
+    private var canTranslate: Bool {
+        guard !state.isAnalyzing, !state.isTranslating else {
+            return false
+        }
+
+        guard case .completed(let result) = state.phase else {
+            return false
+        }
+
+        return !result.fullText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private var hasTranslationOverlay: Bool {
+        guard case .completed(let result) = state.translationPhase else {
+            return false
+        }
+
+        return !result.regions.isEmpty
+    }
+}
+
+private extension OCRLanguageOption {
+    var translationLocaleLanguage: Locale.Language? {
+        switch self {
+        case .automatic, .koreanEnglishJapanese:
+            return nil
+        case .korean:
+            return Locale.Language(languageCode: "ko")
+        case .japanese:
+            return Locale.Language(languageCode: "ja")
+        case .english:
+            return Locale.Language(languageCode: "en")
+        }
+    }
+}
+
+private extension TranslationLanguageOption {
+    var translationLocaleLanguage: Locale.Language? {
+        switch self {
+        case .system:
+            return nil
+        case .korean:
+            return Locale.Language(languageCode: "ko")
+        case .japanese:
+            return Locale.Language(languageCode: "ja")
+        case .english:
+            return Locale.Language(languageCode: "en")
+        }
+    }
+}
+
+private extension Locale.Language {
+    var localizedDisplayName: String {
+        let code = languageCode?.identifier ?? minimalIdentifier
+        return Locale.current.localizedString(forLanguageCode: code) ?? code
+    }
+}

@@ -50,7 +50,7 @@ final class DefaultImageLoader: ImageLoading {
             return
         }
 
-        Task.detached(priority: .utility) { [weak self] in
+        Task(priority: .utility) { [weak self] in
             guard let self else {
                 return
             }

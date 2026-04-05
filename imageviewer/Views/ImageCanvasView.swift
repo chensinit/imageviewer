@@ -5,12 +5,14 @@
 //  Created by Codex on 4/5/26.
 //
 
+import AppKit
 import SwiftUI
 
 struct ImageCanvasView: View {
     let image: NSImage
     let imageIdentifier: String
     let presentation: ViewerPresentationState
+    let translatedRegions: [TranslatedTextRegion]
     let onDoubleClick: () -> Void
 
     @State private var panOffset: CGSize = .zero
@@ -25,10 +27,21 @@ struct ImageCanvasView: View {
                 Color(nsColor: .controlBackgroundColor)
                     .ignoresSafeArea()
 
-                Image(nsImage: image)
-                    .resizable()
-                    .interpolation(presentation.interpolationMode.swiftUIValue)
-                    .frame(width: renderedSize.width, height: renderedSize.height)
+                ZStack {
+                    Image(nsImage: image)
+                        .resizable()
+                        .interpolation(presentation.interpolationMode.swiftUIValue)
+                        .frame(width: renderedSize.width, height: renderedSize.height)
+
+                    ForEach(translatedRegions) { region in
+                        TranslatedRegionOverlay(
+                            text: region.text,
+                            boundingBox: region.boundingBox,
+                            renderedSize: renderedSize
+                        )
+                    }
+                }
+                .frame(width: renderedSize.width, height: renderedSize.height)
                     .scaleEffect(x: presentation.isHorizontallyFlipped ? -1 : 1, y: 1)
                     .rotationEffect(.degrees(Double(presentation.rotationQuarterTurns * 90)))
                     .offset(clampedOffset(in: proxy.size, contentSize: contentSize))
@@ -149,5 +162,96 @@ struct ImageCanvasView: View {
     private func resetPan() {
         panOffset = .zero
         panOffsetAtDragStart = .zero
+    }
+}
+
+private struct TranslatedRegionOverlay: View {
+    let text: String
+    let boundingBox: CGRect
+    let renderedSize: CGSize
+    private let minimumFontSize: CGFloat = 12
+    private let maximumFontSize: CGFloat = 28
+    private let horizontalPadding: CGFloat = 8
+    private let verticalPadding: CGFloat = 6
+
+    var body: some View {
+        let boxWidth = max(boundingBox.width * renderedSize.width, 72)
+        let boxHeight = max(boundingBox.height * renderedSize.height, 28)
+        let fontSize = fittedFontSize(
+            for: CGSize(
+                width: boxWidth - (horizontalPadding * 2),
+                height: boxHeight - (verticalPadding * 2)
+            )
+        )
+
+        Text(text)
+            .font(.system(size: fontSize, weight: .medium))
+            .foregroundStyle(Color.black.opacity(0.92))
+            .multilineTextAlignment(.center)
+            .lineLimit(6)
+            .minimumScaleFactor(minimumFontSize / max(fontSize, minimumFontSize))
+            .lineSpacing(max(fontSize * 0.02, 0.2))
+            .padding(.horizontal, horizontalPadding)
+            .padding(.vertical, verticalPadding)
+            .frame(width: boxWidth, height: boxHeight)
+            .background(
+                RoundedRectangle(cornerRadius: overlayCornerRadius(for: boxHeight), style: .continuous)
+                    .fill(Color.white.opacity(0.86))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: overlayCornerRadius(for: boxHeight), style: .continuous)
+                    .stroke(Color.black.opacity(0.12), lineWidth: 1)
+            )
+            .shadow(color: .black.opacity(0.14), radius: 10, y: 3)
+            .position(
+                x: boundingBox.midX * renderedSize.width,
+                y: (1.0 - boundingBox.midY) * renderedSize.height
+            )
+    }
+
+    private func overlayCornerRadius(for boxHeight: CGFloat) -> CGFloat {
+        min(max(boxHeight * 0.18, 8), 16)
+    }
+
+    private func fittedFontSize(for availableSize: CGSize) -> CGFloat {
+        guard availableSize.width > 0, availableSize.height > 0 else {
+            return minimumFontSize
+        }
+
+        var low = minimumFontSize
+        var high = max(minimumFontSize, min(maximumFontSize, availableSize.height))
+        var best = minimumFontSize
+
+        while high - low > 0.5 {
+            let candidate = (low + high) / 2
+            if textFits(at: candidate, in: availableSize) {
+                best = candidate
+                low = candidate
+            } else {
+                high = candidate
+            }
+        }
+
+        return max(best.rounded(.down), minimumFontSize)
+    }
+
+    private func textFits(at fontSize: CGFloat, in availableSize: CGSize) -> Bool {
+        let paragraphStyle = NSMutableParagraphStyle()
+        paragraphStyle.alignment = .center
+        paragraphStyle.lineBreakMode = .byWordWrapping
+
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: fontSize, weight: .medium),
+            .paragraphStyle: paragraphStyle
+        ]
+
+        let boundingRect = NSString(string: text).boundingRect(
+            with: availableSize,
+            options: [.usesLineFragmentOrigin, .usesFontLeading],
+            attributes: attributes
+        )
+
+        return ceil(boundingRect.width) <= availableSize.width
+            && ceil(boundingRect.height) <= availableSize.height
     }
 }

@@ -123,6 +123,29 @@ struct imageviewerApp: App {
                     }
                 }
             }
+
+            CommandMenu("Tools") {
+                Button("Extract Text", action: viewerState.analyzeCurrentImageText)
+                    .keyboardShortcut("t", modifiers: [.command, .shift])
+                    .disabled(!viewerState.canExtractText)
+
+                Divider()
+
+                Picker("OCR Language", selection: ocrLanguageBinding) {
+                    ForEach(OCRLanguageOption.allCases, id: \.self) { option in
+                        Text(option.displayName).tag(option)
+                    }
+                }
+
+                Picker("Translate To", selection: translationTargetBinding) {
+                    ForEach(TranslationLanguageOption.allCases, id: \.self) { option in
+                        Text(option.displayName).tag(option)
+                    }
+                }
+
+                Toggle("Auto Translate", isOn: autoTranslateBinding)
+                Toggle("Show Translation Overlay", isOn: translatedRegionsVisibilityBinding)
+            }
         }
     }
 
@@ -137,6 +160,34 @@ struct imageviewerApp: App {
         Binding(
             get: { viewerState.presentation.infoOverlayMode },
             set: viewerState.setInfoOverlayMode
+        )
+    }
+
+    private var ocrLanguageBinding: Binding<OCRLanguageOption> {
+        Binding(
+            get: { viewerState.textAnalysis.languageOption },
+            set: viewerState.setOCRLanguageOption
+        )
+    }
+
+    private var translationTargetBinding: Binding<TranslationLanguageOption> {
+        Binding(
+            get: { viewerState.textAnalysis.translationTargetLanguage },
+            set: viewerState.setTranslationTargetLanguage
+        )
+    }
+
+    private var translatedRegionsVisibilityBinding: Binding<Bool> {
+        Binding(
+            get: { viewerState.textAnalysis.showsTranslatedRegions },
+            set: viewerState.setTranslatedRegionsVisibility
+        )
+    }
+
+    private var autoTranslateBinding: Binding<Bool> {
+        Binding(
+            get: { viewerState.textAnalysis.autoTranslateOnImageChange },
+            set: viewerState.setAutoTranslateOnImageChange
         )
     }
 }

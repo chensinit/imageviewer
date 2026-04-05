@@ -7,6 +7,7 @@
 
 import AppKit
 import Combine
+import Foundation
 import UniformTypeIdentifiers
 
 final class ViewerState: ObservableObject {
@@ -24,6 +25,7 @@ final class ViewerState: ObservableObject {
     @Published private(set) var currentItem: ImageItem?
     @Published private(set) var viewPhase: ViewPhase = .empty
     @Published private(set) var recentDocumentURLs: [URL] = []
+    @Published var textAnalysis = ImageTextAnalysisState()
     @Published var presentation = ViewerPresentationState()
 
     var currentPositionText: String? {
@@ -66,25 +68,50 @@ final class ViewerState: ObservableObject {
         itemCount > 0
     }
 
+    var canExtractText: Bool {
+        if case .loaded = viewPhase {
+            return !textAnalysis.isAnalyzing
+        }
+
+        return false
+    }
+
+    var canTranslateRecognizedText: Bool {
+        guard !textAnalysis.isAnalyzing, !textAnalysis.isTranslating else {
+            return false
+        }
+
+        guard case .completed(let result) = textAnalysis.phase else {
+            return false
+        }
+
+        return !result.fullText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     private let imageLoader: any ImageLoading
+    private let textRecognitionService: any TextRecognizing
     private let accessController: any SecurityScopedAccessControlling
     private let archiveAccessor: any ArchiveAccessing
     private let userDefaults: UserDefaults
+
     private static let minimumZoomScale: CGFloat = 0.1
     private static let maximumZoomScale: CGFloat = 8.0
     private static let zoomStep: CGFloat = 1.2
 
     init(
         imageLoader: (any ImageLoading)? = nil,
+        textRecognitionService: any TextRecognizing = VisionTextRecognitionService(),
         accessController: any SecurityScopedAccessControlling = SecurityScopedAccessController(),
         archiveAccessor: any ArchiveAccessing = DefaultArchiveAccessor(),
         userDefaults: UserDefaults = .standard
     ) {
         self.archiveAccessor = archiveAccessor
         self.imageLoader = imageLoader ?? DefaultImageLoader(archiveAccessor: archiveAccessor)
+        self.textRecognitionService = textRecognitionService
         self.accessController = accessController
         self.userDefaults = userDefaults
         presentation = Self.loadPresentation(from: userDefaults)
+        textAnalysis.supportedRecognitionLanguages = textRecognitionService.supportedRecognitionLanguages(for: textAnalysis.languageOption)
         refreshRecentDocuments()
     }
 
@@ -244,6 +271,126 @@ final class ViewerState: ObservableObject {
         persistPresentationPreferences()
     }
 
+    func analyzeCurrentImageText() {
+        guard case .loaded(let image) = viewPhase else {
+            return
+        }
+
+        let languageOption = textAnalysis.languageOption
+        let analysisRequestID = UUID()
+        textAnalysis.analysisRequestID = analysisRequestID
+        textAnalysis.phase = .analyzing
+
+        DispatchQueue.global(qos: .userInitiated).async { [weak self, textRecognitionService] in
+            do {
+                let result = try textRecognitionService.recognizeText(in: image, languageOption: languageOption)
+                DispatchQueue.main.async {
+                    guard self?.textAnalysis.analysisRequestID == analysisRequestID else {
+                        return
+                    }
+
+                    self?.textAnalysis.detectedRegions = []
+                    self?.textAnalysis.showsDetectedRegions = false
+                    self?.textAnalysis.phase = .completed(result)
+                    let sourceText = result.fullText.trimmingCharacters(in: .whitespacesAndNewlines)
+
+                    if sourceText.isEmpty {
+                        self?.textAnalysis.translationPhase = .idle
+                    } else if let self,
+                              self.textAnalysis.lastTranslatedSourceText == sourceText,
+                              self.textAnalysis.lastTranslatedTargetLanguage == self.textAnalysis.translationTargetLanguage,
+                              let cached = self.textAnalysis.lastCompletedTranslation {
+                        self.textAnalysis.translationPhase = .completed(cached)
+                    } else {
+                        self?.requestTranslation()
+                    }
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    guard self?.textAnalysis.analysisRequestID == analysisRequestID else {
+                        return
+                    }
+
+                    self?.textAnalysis.detectedRegions = []
+                    self?.textAnalysis.showsDetectedRegions = false
+                    self?.textAnalysis.phase = .failed(error.localizedDescription)
+                    self?.textAnalysis.translationPhase = .idle
+                }
+            }
+        }
+    }
+
+    func dismissTextAnalysisSheet() {
+        textAnalysis.isSheetPresented = false
+    }
+
+    func setOCRLanguageOption(_ option: OCRLanguageOption) {
+        textAnalysis.languageOption = option
+        textAnalysis.supportedRecognitionLanguages = textRecognitionService.supportedRecognitionLanguages(for: option)
+        textAnalysis.translationPhase = .idle
+        textAnalysis.lastCompletedTranslation = nil
+        textAnalysis.lastTranslatedSourceText = ""
+        textAnalysis.lastTranslatedTargetLanguage = nil
+    }
+
+    func setTranslationTargetLanguage(_ option: TranslationLanguageOption) {
+        textAnalysis.translationTargetLanguage = option
+        textAnalysis.translationPhase = .idle
+        textAnalysis.lastCompletedTranslation = nil
+        textAnalysis.lastTranslatedSourceText = ""
+        textAnalysis.lastTranslatedTargetLanguage = nil
+    }
+
+    func setDetectedRegionsVisibility(_ isVisible: Bool) {
+        textAnalysis.showsDetectedRegions = isVisible
+    }
+
+    func setTranslatedRegionsVisibility(_ isVisible: Bool) {
+        textAnalysis.showsTranslatedRegions = isVisible
+    }
+
+    func setAutoTranslateOnImageChange(_ isEnabled: Bool) {
+        textAnalysis.autoTranslateOnImageChange = isEnabled
+
+        guard isEnabled,
+              case .loaded = viewPhase,
+              !textAnalysis.isAnalyzing else {
+            return
+        }
+
+        analyzeCurrentImageText()
+    }
+
+    func requestTranslation() {
+        guard canTranslateRecognizedText else {
+            return
+        }
+
+        if case .translating = textAnalysis.translationPhase,
+           textAnalysis.translationRequestItemID == currentItem?.id {
+            return
+        }
+
+        textAnalysis.translationPhase = .translating
+        textAnalysis.translationRequestID = UUID()
+        textAnalysis.translationRequestItemID = currentItem?.id
+    }
+
+    func completeTranslation(_ result: TranslationResult) {
+        textAnalysis.translationPhase = .completed(result)
+        textAnalysis.lastCompletedTranslation = result
+
+        if case .completed(let analysisResult) = textAnalysis.phase {
+            textAnalysis.lastTranslatedSourceText = analysisResult.fullText.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        textAnalysis.lastTranslatedTargetLanguage = textAnalysis.translationTargetLanguage
+    }
+
+    func failTranslation(_ message: String) {
+        textAnalysis.translationPhase = .failed(message)
+    }
+
     private func makeCollection(for url: URL) throws -> any ImageCollection {
         guard url.isFileURL else {
             throw ViewerStateError.nonFileURL
@@ -260,7 +407,7 @@ final class ViewerState: ObservableObject {
         throw ViewerStateError.unsupportedFileType
     }
 
-    private static func supportsImage(at url: URL) -> Bool {
+    nonisolated private static func supportsImage(at url: URL) -> Bool {
         guard let type = try? url.resourceValues(forKeys: [.contentTypeKey]).contentType else {
             return false
         }
@@ -268,7 +415,7 @@ final class ViewerState: ObservableObject {
         return type.conforms(to: .image)
     }
 
-    private static func supportsZIPArchive(at url: URL) -> Bool {
+    nonisolated private static func supportsZIPArchive(at url: URL) -> Bool {
         if let type = try? url.resourceValues(forKeys: [.contentTypeKey]).contentType {
             if let zipContentType {
                 return type.identifier == zipContentTypeIdentifier
@@ -297,13 +444,39 @@ final class ViewerState: ObservableObject {
 
         let item = collection.items[index]
         let image = try imageLoader.loadImage(for: item)
+        let languageOption = textAnalysis.languageOption
+        let translationTargetLanguage = textAnalysis.translationTargetLanguage
+        let supportedRecognitionLanguages = textAnalysis.supportedRecognitionLanguages
+        let showsTranslatedRegions = textAnalysis.showsTranslatedRegions
+        let autoTranslateOnImageChange = textAnalysis.autoTranslateOnImageChange
+
+        cancelTextAnalysisRequests()
 
         currentCollection = collection
         currentIndex = index
         currentItem = item
+        textAnalysis = ImageTextAnalysisState()
+        textAnalysis.languageOption = languageOption
+        textAnalysis.translationTargetLanguage = translationTargetLanguage
+        textAnalysis.supportedRecognitionLanguages = supportedRecognitionLanguages
+        textAnalysis.showsTranslatedRegions = showsTranslatedRegions
+        textAnalysis.autoTranslateOnImageChange = autoTranslateOnImageChange
         resetPresentationForNewItem()
         viewPhase = .loaded(image)
         preloadAdjacentItems(around: index, in: collection)
+
+        if autoTranslateOnImageChange {
+            DispatchQueue.main.async { [weak self, itemID = item.id] in
+                guard let self,
+                      self.currentItem?.id == itemID,
+                      self.textAnalysis.autoTranslateOnImageChange,
+                      !self.textAnalysis.isAnalyzing else {
+                    return
+                }
+
+                self.analyzeCurrentImageText()
+            }
+        }
     }
 
     private func tryOpen(itemAt index: Int, in collection: any ImageCollection) {
@@ -314,15 +487,28 @@ final class ViewerState: ObservableObject {
         }
     }
 
-    private static func supportsOpenableFile(at url: URL) -> Bool {
+    private func cancelTextAnalysisRequests() {
+        textAnalysis.analysisRequestID = UUID()
+        textAnalysis.translationRequestID = UUID()
+        textAnalysis.translationRequestItemID = nil
+        textAnalysis.phase = .idle
+        textAnalysis.translationPhase = .idle
+        textAnalysis.detectedRegions = []
+        textAnalysis.showsDetectedRegions = false
+        textAnalysis.lastCompletedTranslation = nil
+        textAnalysis.lastTranslatedSourceText = ""
+        textAnalysis.lastTranslatedTargetLanguage = nil
+    }
+
+    nonisolated private static func supportsOpenableFile(at url: URL) -> Bool {
         supportsImage(at: url) || supportsZIPArchive(at: url)
     }
 
-    private static var zipContentType: UTType? {
+    nonisolated private static var zipContentType: UTType? {
         UTType(zipContentTypeIdentifier)
     }
 
-    private static func itemIdentifier(for openedURL: URL, in item: ImageItem) -> String {
+    nonisolated private static func itemIdentifier(for openedURL: URL, in item: ImageItem) -> String {
         switch item.sourceKind {
         case .fileSystem:
             return openedURL.standardizedFileURL.absoluteString
@@ -374,7 +560,7 @@ final class ViewerState: ObservableObject {
         userDefaults.set(data, forKey: Self.viewerPreferencesKey)
     }
 
-    private static func loadPresentation(from userDefaults: UserDefaults) -> ViewerPresentationState {
+    nonisolated private static func loadPresentation(from userDefaults: UserDefaults) -> ViewerPresentationState {
         guard let data = userDefaults.data(forKey: viewerPreferencesKey),
               let preferences = try? JSONDecoder().decode(ViewerPreferences.self, from: data) else {
             return ViewerPresentationState()
