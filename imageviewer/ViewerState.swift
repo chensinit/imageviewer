@@ -222,15 +222,19 @@ final class ViewerState: ObservableObject {
     }
 
     func zoomIn() {
-        presentation.zoomScale = min(presentation.zoomScale * Self.zoomStep, Self.maximumZoomScale)
+        presentation.zoomScale = clampedZoomScale(for: presentation.zoomScale * Self.zoomStep)
     }
 
     func zoomOut() {
-        presentation.zoomScale = max(presentation.zoomScale / Self.zoomStep, Self.minimumZoomScale)
+        presentation.zoomScale = clampedZoomScale(for: presentation.zoomScale / Self.zoomStep)
     }
 
     func resetZoom() {
         presentation.zoomScale = 1.0
+    }
+
+    func setZoomScale(_ scale: CGFloat) {
+        presentation.zoomScale = clampedZoomScale(for: scale)
     }
 
     func rotateClockwise() {
@@ -407,7 +411,7 @@ final class ViewerState: ObservableObject {
         throw ViewerStateError.unsupportedFileType
     }
 
-    nonisolated private static func supportsImage(at url: URL) -> Bool {
+    private static func supportsImage(at url: URL) -> Bool {
         guard let type = try? url.resourceValues(forKeys: [.contentTypeKey]).contentType else {
             return false
         }
@@ -415,7 +419,7 @@ final class ViewerState: ObservableObject {
         return type.conforms(to: .image)
     }
 
-    nonisolated private static func supportsZIPArchive(at url: URL) -> Bool {
+    private static func supportsZIPArchive(at url: URL) -> Bool {
         if let type = try? url.resourceValues(forKeys: [.contentTypeKey]).contentType {
             if let zipContentType {
                 return type.identifier == zipContentTypeIdentifier
@@ -500,15 +504,15 @@ final class ViewerState: ObservableObject {
         textAnalysis.lastTranslatedTargetLanguage = nil
     }
 
-    nonisolated private static func supportsOpenableFile(at url: URL) -> Bool {
+    private static func supportsOpenableFile(at url: URL) -> Bool {
         supportsImage(at: url) || supportsZIPArchive(at: url)
     }
 
-    nonisolated private static var zipContentType: UTType? {
+    private static var zipContentType: UTType? {
         UTType(zipContentTypeIdentifier)
     }
 
-    nonisolated private static func itemIdentifier(for openedURL: URL, in item: ImageItem) -> String {
+    private static func itemIdentifier(for openedURL: URL, in item: ImageItem) -> String {
         switch item.sourceKind {
         case .fileSystem:
             return openedURL.standardizedFileURL.absoluteString
@@ -520,6 +524,10 @@ final class ViewerState: ObservableObject {
     private func noteRecentDocument(_ url: URL) {
         NSDocumentController.shared.noteNewRecentDocumentURL(url)
         refreshRecentDocuments()
+    }
+
+    private func clampedZoomScale(for scale: CGFloat) -> CGFloat {
+        min(max(scale, Self.minimumZoomScale), Self.maximumZoomScale)
     }
 
     private func refreshRecentDocuments() {
@@ -560,7 +568,7 @@ final class ViewerState: ObservableObject {
         userDefaults.set(data, forKey: Self.viewerPreferencesKey)
     }
 
-    nonisolated private static func loadPresentation(from userDefaults: UserDefaults) -> ViewerPresentationState {
+    private static func loadPresentation(from userDefaults: UserDefaults) -> ViewerPresentationState {
         guard let data = userDefaults.data(forKey: viewerPreferencesKey),
               let preferences = try? JSONDecoder().decode(ViewerPreferences.self, from: data) else {
             return ViewerPresentationState()

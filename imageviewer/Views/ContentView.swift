@@ -16,10 +16,11 @@ struct ContentView: View {
     @State private var overlayHideTask: Task<Void, Never>?
     @State private var lastScrollActionDate = Date.distantPast
     @State private var isCollectionBrowserPresented = false
+    @State private var isMenuTracking = false
 
     var body: some View {
         rootContent
-            .background(WindowEventMonitor(onScrollWheel: handleScrollWheel))
+            .background(WindowEventMonitor(onScrollWheel: handleScrollWheel, onMagnify: handleMagnify))
             .toolbar { toolbarContent }
             .overlay(alignment: .bottom, content: overlayContent)
             .overlay(alignment: .topTrailing, content: autoTextProgressOverlay)
@@ -42,6 +43,15 @@ struct ContentView: View {
             }
             .onChange(of: viewerState.presentation.infoOverlayMode) { _, _ in
                 updateOverlayVisibilityForCurrentMode()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: NSMenu.didBeginTrackingNotification)) { _ in
+                isMenuTracking = true
+                overlayHideTask?.cancel()
+                isInfoOverlayVisible = true
+            }
+            .onReceive(NotificationCenter.default.publisher(for: NSMenu.didEndTrackingNotification)) { _ in
+                isMenuTracking = false
+                scheduleOverlayAutoHideIfNeeded()
             }
             .animation(.easeInOut(duration: 0.18), value: isInfoOverlayVisible)
             .animation(.easeInOut(duration: 0.18), value: autoTextProgressMessage)
@@ -234,6 +244,20 @@ struct ContentView: View {
         }
 
         lastScrollActionDate = now
+        revealOverlayTemporarily()
+        return true
+    }
+
+    private func handleMagnify(_ event: NSEvent) -> Bool {
+        guard case .loaded = viewerState.viewPhase else {
+            return false
+        }
+
+        guard abs(event.magnification) > 0.0005 else {
+            return false
+        }
+
+        viewerState.setZoomScale(viewerState.presentation.zoomScale * (1 + event.magnification))
         revealOverlayTemporarily()
         return true
     }
@@ -505,6 +529,11 @@ struct ContentView: View {
             return
         }
 
+        guard !isMenuTracking else {
+            isInfoOverlayVisible = true
+            return
+        }
+
         overlayHideTask = Task {
             try? await Task.sleep(for: .seconds(2.0))
             guard !Task.isCancelled else {
@@ -517,25 +546,22 @@ struct ContentView: View {
         }
     }
 
+    @MainActor
     private func performTranslation(using session: TranslationSession, requestID: UUID) async {
         guard case .completed(let result) = viewerState.textAnalysis.phase else {
-            await MainActor.run {
-                guard viewerState.textAnalysis.translationRequestID == requestID else {
-                    return
-                }
-                viewerState.failTranslation("Run OCR successfully before translating.")
+            guard viewerState.textAnalysis.translationRequestID == requestID else {
+                return
             }
+            viewerState.failTranslation("Run OCR successfully before translating.")
             return
         }
 
         let sourceText = result.fullText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !sourceText.isEmpty else {
-            await MainActor.run {
-                guard viewerState.textAnalysis.translationRequestID == requestID else {
-                    return
-                }
-                viewerState.failTranslation("No OCR text is available to translate.")
+            guard viewerState.textAnalysis.translationRequestID == requestID else {
+                return
             }
+            viewerState.failTranslation("No OCR text is available to translate.")
             return
         }
 
@@ -579,27 +605,23 @@ struct ContentView: View {
                 .normalizedLineBreaks
 
             let summaryResponse = try await session.translate(sourceText)
-            await MainActor.run {
-                guard viewerState.textAnalysis.translationRequestID == requestID else {
-                    return
-                }
-                viewerState.completeTranslation(
-                    TranslationResult(
-                        sourceLanguage: summaryResponse.sourceLanguage.localizedDisplayName,
-                        targetLanguage: summaryResponse.targetLanguage.localizedDisplayName,
-                        translatedText: (translatedText.isEmpty ? summaryResponse.targetText : translatedText)
-                            .normalizedLineBreaks,
-                        regions: overlayRegions
-                    )
+            guard viewerState.textAnalysis.translationRequestID == requestID else {
+                return
+            }
+            viewerState.completeTranslation(
+                TranslationResult(
+                    sourceLanguage: summaryResponse.sourceLanguage.localizedDisplayName,
+                    targetLanguage: summaryResponse.targetLanguage.localizedDisplayName,
+                    translatedText: (translatedText.isEmpty ? summaryResponse.targetText : translatedText)
+                        .normalizedLineBreaks,
+                    regions: overlayRegions
                 )
-            }
+            )
         } catch {
-            await MainActor.run {
-                guard viewerState.textAnalysis.translationRequestID == requestID else {
-                    return
-                }
-                viewerState.failTranslation(error.localizedDescription)
+            guard viewerState.textAnalysis.translationRequestID == requestID else {
+                return
             }
+            viewerState.failTranslation(error.localizedDescription)
         }
     }
 }

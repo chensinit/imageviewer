@@ -10,9 +10,10 @@ import SwiftUI
 
 struct WindowEventMonitor: NSViewRepresentable {
     let onScrollWheel: (NSEvent) -> Bool
+    let onMagnify: (NSEvent) -> Bool
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(onScrollWheel: onScrollWheel)
+        Coordinator(onScrollWheel: onScrollWheel, onMagnify: onMagnify)
     }
 
     func makeNSView(context: Context) -> TrackingView {
@@ -31,28 +32,44 @@ struct WindowEventMonitor: NSViewRepresentable {
 
     final class Coordinator {
         private let onScrollWheel: (NSEvent) -> Bool
-        private var monitor: Any?
+        private let onMagnify: (NSEvent) -> Bool
+        private var scrollMonitor: Any?
+        private var magnifyMonitor: Any?
 
-        init(onScrollWheel: @escaping (NSEvent) -> Bool) {
+        init(onScrollWheel: @escaping (NSEvent) -> Bool, onMagnify: @escaping (NSEvent) -> Bool) {
             self.onScrollWheel = onScrollWheel
+            self.onMagnify = onMagnify
         }
 
         func startMonitoring(for window: NSWindow?) {
             stopMonitoring()
 
-            monitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self, weak window] event in
+            scrollMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self, weak window] event in
                 guard let self, event.window === window else {
                     return event
                 }
 
                 return self.onScrollWheel(event) ? nil : event
             }
+
+            magnifyMonitor = NSEvent.addLocalMonitorForEvents(matching: .magnify) { [weak self, weak window] event in
+                guard let self, event.window === window else {
+                    return event
+                }
+
+                return self.onMagnify(event) ? nil : event
+            }
         }
 
         func stopMonitoring() {
-            if let monitor {
-                NSEvent.removeMonitor(monitor)
-                self.monitor = nil
+            if let scrollMonitor {
+                NSEvent.removeMonitor(scrollMonitor)
+                self.scrollMonitor = nil
+            }
+
+            if let magnifyMonitor {
+                NSEvent.removeMonitor(magnifyMonitor)
+                self.magnifyMonitor = nil
             }
         }
     }

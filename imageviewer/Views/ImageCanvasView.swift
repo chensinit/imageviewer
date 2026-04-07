@@ -21,12 +21,9 @@ struct ImageCanvasView: View {
     var body: some View {
         GeometryReader { proxy in
             let renderedSize = renderedSize(in: proxy.size)
-            let contentSize = contentSize(for: renderedSize)
+            let pannableSize = pannableSize(for: renderedSize)
 
             ZStack {
-                Color(nsColor: .controlBackgroundColor)
-                    .ignoresSafeArea()
-
                 ZStack {
                     Image(nsImage: image)
                         .resizable()
@@ -42,29 +39,33 @@ struct ImageCanvasView: View {
                     }
                 }
                 .frame(width: renderedSize.width, height: renderedSize.height)
-                    .scaleEffect(x: presentation.isHorizontallyFlipped ? -1 : 1, y: 1)
-                    .rotationEffect(.degrees(Double(presentation.rotationQuarterTurns * 90)))
-                    .offset(clampedOffset(in: proxy.size, contentSize: contentSize))
+                .scaleEffect(x: presentation.isHorizontallyFlipped ? -1 : 1, y: 1)
+                .rotationEffect(.degrees(Double(presentation.rotationQuarterTurns * 90)))
+                .offset(clampedOffset(in: proxy.size, pannableSize: pannableSize))
             }
+            .frame(width: proxy.size.width, height: proxy.size.height)
             .contentShape(Rectangle())
-            .gesture(panGesture(in: proxy.size, contentSize: contentSize))
+            .gesture(panGesture(in: proxy.size, pannableSize: pannableSize))
             .onTapGesture(count: 2, perform: onDoubleClick)
             .onChange(of: imageIdentifier) { _, _ in
                 resetPan()
             }
             .onChange(of: presentation.fitMode) { _, _ in
-                adjustPanForCurrentPresentation(in: proxy.size, contentSize: contentSize)
+                adjustPanForCurrentPresentation(in: proxy.size, pannableSize: pannableSize)
             }
             .onChange(of: presentation.zoomScale) { _, _ in
-                adjustPanForCurrentPresentation(in: proxy.size, contentSize: contentSize)
+                adjustPanForCurrentPresentation(in: proxy.size, pannableSize: pannableSize)
             }
             .onChange(of: presentation.rotationQuarterTurns) { _, _ in
-                clampPan(in: proxy.size, contentSize: contentSize)
+                clampPan(in: proxy.size, pannableSize: pannableSize)
             }
             .onChange(of: presentation.isHorizontallyFlipped) { _, _ in
-                clampPan(in: proxy.size, contentSize: contentSize)
+                clampPan(in: proxy.size, pannableSize: pannableSize)
             }
-            .background(Color(nsColor: .controlBackgroundColor))
+            .background(
+                Color(nsColor: .controlBackgroundColor)
+                    .ignoresSafeArea()
+            )
         }
     }
 
@@ -86,19 +87,17 @@ struct ImageCanvasView: View {
         }
     }
 
-    private func contentSize(for renderedSize: CGSize) -> CGSize {
+    private func pannableSize(for renderedSize: CGSize) -> CGSize {
         let rotationIsVertical = presentation.rotationQuarterTurns % 2 != 0
-        let rotatedSize = rotationIsVertical
+        return rotationIsVertical
             ? CGSize(width: renderedSize.height, height: renderedSize.width)
             : renderedSize
-
-        return CGSize(width: rotatedSize.width + 48, height: rotatedSize.height + 48)
     }
 
-    private func panGesture(in availableSize: CGSize, contentSize: CGSize) -> some Gesture {
+    private func panGesture(in availableSize: CGSize, pannableSize: CGSize) -> some Gesture {
         DragGesture()
             .onChanged { value in
-                guard canPan(in: availableSize, contentSize: contentSize) else {
+                guard canPan(in: availableSize, pannableSize: pannableSize) else {
                     return
                 }
 
@@ -108,35 +107,35 @@ struct ImageCanvasView: View {
                         height: panOffsetAtDragStart.height + value.translation.height
                     ),
                     in: availableSize,
-                    contentSize: contentSize
+                    pannableSize: pannableSize
                 )
             }
             .onEnded { _ in
-                panOffsetAtDragStart = clampedOffset(for: panOffset, in: availableSize, contentSize: contentSize)
+                panOffsetAtDragStart = clampedOffset(for: panOffset, in: availableSize, pannableSize: pannableSize)
             }
     }
 
-    private func canPan(in availableSize: CGSize, contentSize: CGSize) -> Bool {
+    private func canPan(in availableSize: CGSize, pannableSize: CGSize) -> Bool {
         guard presentation.fitMode == .actualSize || presentation.zoomScale > 1.0 else {
             return false
         }
 
-        return contentSize.width > availableSize.width || contentSize.height > availableSize.height
+        return pannableSize.width > availableSize.width || pannableSize.height > availableSize.height
     }
 
-    private func clampedOffset(in availableSize: CGSize, contentSize: CGSize) -> CGSize {
-        clampedOffset(for: panOffset, in: availableSize, contentSize: contentSize)
+    private func clampedOffset(in availableSize: CGSize, pannableSize: CGSize) -> CGSize {
+        clampedOffset(for: panOffset, in: availableSize, pannableSize: pannableSize)
     }
 
-    private func clampedOffset(for proposedOffset: CGSize, in availableSize: CGSize, contentSize: CGSize) -> CGSize {
+    private func clampedOffset(for proposedOffset: CGSize, in availableSize: CGSize, pannableSize: CGSize) -> CGSize {
         CGSize(
             width: clamp(
                 proposedOffset.width,
-                limit: max((contentSize.width - availableSize.width) / 2, 0)
+                limit: max((pannableSize.width - availableSize.width) / 2, 0)
             ),
             height: clamp(
                 proposedOffset.height,
-                limit: max((contentSize.height - availableSize.height) / 2, 0)
+                limit: max((pannableSize.height - availableSize.height) / 2, 0)
             )
         )
     }
@@ -145,16 +144,16 @@ struct ImageCanvasView: View {
         min(max(value, -limit), limit)
     }
 
-    private func adjustPanForCurrentPresentation(in availableSize: CGSize, contentSize: CGSize) {
-        if canPan(in: availableSize, contentSize: contentSize) {
-            clampPan(in: availableSize, contentSize: contentSize)
+    private func adjustPanForCurrentPresentation(in availableSize: CGSize, pannableSize: CGSize) {
+        if canPan(in: availableSize, pannableSize: pannableSize) {
+            clampPan(in: availableSize, pannableSize: pannableSize)
         } else {
             resetPan()
         }
     }
 
-    private func clampPan(in availableSize: CGSize, contentSize: CGSize) {
-        let clamped = clampedOffset(for: panOffset, in: availableSize, contentSize: contentSize)
+    private func clampPan(in availableSize: CGSize, pannableSize: CGSize) {
+        let clamped = clampedOffset(for: panOffset, in: availableSize, pannableSize: pannableSize)
         panOffset = clamped
         panOffsetAtDragStart = clamped
     }
